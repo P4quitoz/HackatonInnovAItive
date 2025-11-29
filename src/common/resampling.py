@@ -1,25 +1,31 @@
 import pandas as pd
 from pathlib import Path
+from src.common.config import (
+    TRAIN_RAW_PATH,
+    TEST_RAW_PATH,
+    TRAIN_1MIN_PATH,
+    TEST_1MIN_PATH,
+    RESAMPLE_FREQ,
+    FRIDGE_MAX_W,
+    FRIDGE_RATIO_THRESHOLD,
+)
 
 
-def resample_chain2(
-    df: pd.DataFrame,
-    time_col: str = "datetime",
-    freq: str = "1min",
-    group_col: str | None = None,
-) -> pd.DataFrame:
-
+# ============================================
+# RESAMPLING LOGIC (CHAIN2 → 1-MINUTE)
+# ============================================
+def resample_chain2(df, time_col="datetime", freq="1min", group_col=None):
     df = df.copy()
 
-    # Normalize timestamps to UTC (handles +00, +01, DST, etc.)
+    # Normalize timestamps
     df[time_col] = pd.to_datetime(df[time_col], utc=True)
 
+    # Single test home (no home_id)
     if group_col is None:
-        df = df.set_index(time_col).sort_index()
-        df_resampled = df.resample(freq).ffill().reset_index()
-        return df_resampled
+        df = df.sort_values(time_col).set_index(time_col)
+        return df.resample(freq).ffill().reset_index()
 
-    # Multiple homes: resample each home independently
+    # Multiple homes → resample separately
     chunks = []
     for gid, g in df.groupby(group_col):
         g = g.sort_values(time_col).set_index(time_col)
@@ -27,21 +33,22 @@ def resample_chain2(
         g_resampled[group_col] = gid
         chunks.append(g_resampled)
 
-    df_resampled = pd.concat(chunks).reset_index()
-    df_resampled = df_resampled.sort_values([group_col, time_col])
-    return df_resampled
+    out = pd.concat(chunks).reset_index()
+    return out.sort_values([group_col, time_col])
 
 
+# ============================================
+# FRIDGE CLEANING RULE
+# ============================================
 def clean_fridge_rule(
-    df: pd.DataFrame,
-    power_col: str = "power",
-    fridge_col: str = "fridge",
-    max_fridge: float = 450.0,
-    ratio_threshold: float = 0.4,
-) -> pd.DataFrame:
-    df = df.copy()
+    df,
+    power_col="power",
+    fridge_col="fridge",
+    max_fridge=FRIDGE_MAX_W,
+    ratio_threshold=FRIDGE_RATIO_THRESHOLD,
+):
 
-    # Basic sanity clip
+    df = df.copy()
     df[power_col] = df[power_col].clip(lower=0)
     df[fridge_col] = df[fridge_col].clip(lower=0)
 
@@ -53,41 +60,32 @@ def clean_fridge_rule(
     return df
 
 
-# TEST IT WORKS
+# ============================================
+# MAIN SCRIPT
+# ============================================
 if __name__ == "__main__":
-    # Paths assuming project root is current working directory
-    raw_dir = Path("data/raw")
-    proc_dir = Path("data/processed")
-    proc_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Resampling train/test...")
 
     # --- TRAIN ---
-    train_path = raw_dir / "train.csv"
-    train_df = pd.read_csv(train_path)
+    train_df = pd.read_csv(TRAIN_RAW_PATH)
 
     train_1min = resample_chain2(
-        train_df,
-        time_col="datetime",
-        freq="1min",
-        group_col="home_id",  # multiple homes
+        train_df, time_col="datetime", freq=RESAMPLE_FREQ, group_col="home_id"
     )
-    train_1min = clean_fridge_rule(train_1min)  # apply 0.4 / 450 rule
 
-    train_out = proc_dir / "train_1min.csv"
-    train_1min.to_csv(train_out, index=False)
+    train_1min = clean_fridge_rule(train_1min)
+    train_1min.to_csv(TRAIN_1MIN_PATH, index=False)
 
     # --- TEST ---
-    test_path = raw_dir / "test.csv"
-    test_df = pd.read_csv(test_path)
+    test_df = pd.read_csv(TEST_RAW_PATH)
 
-    # single test home, no home_id
     test_1min = resample_chain2(
-        test_df,
-        time_col="datetime",
-        freq="1min",
-        group_col=None,
+        test_df, time_col="datetime", freq=RESAMPLE_FREQ, group_col=None
     )
 
-    test_out = proc_dir / "test_1min.csv"
-    test_1min.to_csv(test_out, index=False)
+    test_1min.to_csv(TEST_1MIN_PATH, index=False)
 
-    print(f"Saved resampled files:\n  {train_out}\n  {test_out}")
+    print("Saved:")
+    print(" -", TRAIN_1MIN_PATH)
+    print(" -", TEST_1MIN_PATH)
